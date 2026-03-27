@@ -1,1 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>AXEROCAM</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet" />
 
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:      #00ff41;
+      --green-dim:  #00c832;
+      --green-dark: #003b0f;
+      --red:        #ff2020;
+      --yellow:     #ffe600;
+      --bg:         #000a00;
+      --panel:      rgba(0, 255, 65, 0.04);
+      --border:     rgba(0, 255, 65, 0.18);
+      --font-mono:  'Share Tech Mono', monospace;
+      --font-hud:   'Orbitron', monospace;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--green);
+      font-family: var(--font-mono);
+      overflow: hidden;
+    }
+
+    /* ── Views ───────────────────────────────────────────────────────── */
+    .view { display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+    .view.active { display: flex; }
+
+    /* ══════════════════════════════════════════════════════════════════
+       CAMERA VIEW
+    ══════════════════════════════════════════════════════════════════ */
+    #camera-view {
+      flex-direction: column;
+      align-items: stretch;
+      position: relative;
+    }
+
+    /* Live video feed */
+    #video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      z-index: 0;
+      /* Mirror for selfie cam — toggle via JS for rear cam */
+      transform: scaleX(-1);
+    }
+    #video.rear { transform: none; }
+
+    /* Hidden canvas used for motion detection */
+    #canvas { display: none; }
+
+    /* ── Scan line overlay ────────────────────────────────────────────── */
+    .scanlines {
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.08) 2px,
+        rgba(0,0,0,0.08) 4px
+      );
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* ── Corner brackets ─────────────────────────────────────────────── */
+    .corner {
+      position: absolute;
+      width: 28px; height: 28px;
+      border-color: var(--green);
+      border-style: solid;
+      opacity: 0.7;
+      z-index: 2;
+      pointer-events: none;
+    }
+    .corner-tl { top: 14px; left: 14px;  border-width: 2px 0 0 2px; }
+    .corner-tr { top: 14px; right: 14px; border-width: 2px 2px 0 0; }
+    .corner-bl { bottom: 14px; left: 14px;  border-width: 0 0 2px 2px; }
+    .corner-br { bottom: 14px; right: 14px; border-width: 0 2px 2px 0; }
+
+    /* ── Top HUD bar ─────────────────────────────────────────────────── */
+    #hud-top {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      z-index: 3;
+      padding: 10px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to bottom, rgba(0,10,0,0.85) 0%, transparent 100%);
+    }
+
+    #logo {
+      font-family: var(--font-hud);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 3px;
+      color: var(--green);
+      text-shadow: 0 0 12px var(--green);
+    }
+
+    #clock {
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: var(--green-dim);
+      opacity: 0.85;
+    }
+
+    /* REC indicator */
+    #rec-badge {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-family: var(--font-hud);
+      letter-spacing: 2px;
+      color: var(--red);
+    }
+    #rec-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--red);
+      box-shadow: 0 0 8px var(--red);
+      animation: blink 1s step-start infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    /* ── Center crosshair ─────────────────────────────────────────────── */
+    #crosshair {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 40px; height: 40px;
+      z-index: 2;
+      pointer-events: none;
+      opacity: 0.4;
+    }
+    #crosshair::before, #crosshair::after {
+      content: '';
+      position: absolute;
+      background: var(--green);
+    }
+    #crosshair::before { width: 1px; height: 100%; left: 50%; top: 0; }
+    #crosshair::after  { height: 1px; width: 100%; top: 50%; left: 0; }
+
+    /* ── Bottom status bar ───────────────────────────────────────────── */
+    #hud-bottom {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      z-index: 3;
+      padding: 14px 16px 22px;
+      background: linear-gradient(to top, rgba(0,10,0,0.92) 0%, transparent 100%);
+    }
+
+    #status-line {
+      font-family: var(--font-hud);
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: var(--green);
+      text-shadow: 0 0 8px var(--green);
+      margin-bottom: 10px;
+      transition: color 0.3s;
+    }
+    #status-line.alert {
+      color: var(--red);
+      text-shadow: 0 0 10px var(--red);
+      animation: flicker 0.15s 3;
+    }
+    @keyframes flicker { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* Sensitivity slider */
+    #sensitivity-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    #sensitivity-wrap label {
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: var(--green-dim);
+      min-width: 100px;
+    }
+    #sensitivity {
+      -webkit-appearance: none;
+      flex: 1;
+      height: 2px;
+      background: var(--border);
+      outline: none;
+      border-radius: 2px;
+    }
+    #sensitivity::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+      cursor: pointer;
+    }
+    #sens-value {
+      font-size: 9px;
+      color: var(--green);
+      min-width: 30px;
+      text-align: right;
+    }
+
+    /* Bottom button row */
+    #btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .hud-btn {
+      flex: 1;
+      padding: 7px 4px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--green);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 2px;
+      cursor: pointer;
+      border-radius: 2px;
+      text-transform: uppercase;
+      transition: background 0.2s, box-shadow 0.2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .hud-btn:active {
+      background: rgba(0,255,65,0.12);
+      box-shadow: 0 0 8px var(--green);
+    }
+    .hud-btn.danger {
+      color: var(--red);
+      border-color: rgba(255,32,32,0.3);
+    }
+    .hud-btn.danger:active { box-shadow: 0 0 8px var(--red); }
+
+    /* ── Motion flash overlay ────────────────────────────────────────── */
+    #motion-flash {
+      position: absolute;
+      inset: 0;
+      background: rgba(255, 32, 32, 0.15);
+      z-index: 4;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.1s;
+    }
+    #motion-flash.active { opacity: 1; }
+
+    /* ── Log overlay (slide up from bottom) ──────────────────────────── */
+    #log-panel {
+      position: absolute;
+      bottom: 100px; left: 0; right: 0;
+      z-index: 5;
+      padding: 0 16px;
+      max-height: 120px;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    .log-entry {
+      font-size: 9px;
+      letter-spacing: 1px;
+      line-height: 1.6;
+      color: var(--green-dim);
+      animation: fadeUp 0.3s ease;
+    }
+    .log-entry.alert-log { color: var(--red); }
+    .log-entry.sent-log  { color: #c84bff; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       GALLERY VIEW
+    ══════════════════════════════════════════════════════════════════ */
+    #gallery-view {
+      flex-direction: column;
+      background: var(--bg);
+      overflow-y: auto;
+    }
+
+    #gallery-header {
+      padding: 16px;
+      background: rgba(0,10,0,0.95);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    #gallery-header h1 {
+      font-family: var(--font-hud);
+      font-size: 12px;
+      letter-spacing: 4px;
+      color: var(--green);
+      text-shadow: 0 0 8px var(--green);
+    }
+
+    #gallery-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 2px;
+      padding: 2px;
+    }
+
+    .gallery-item {
+      position: relative;
+      aspect-ratio: 4/3;
+      overflow: hidden;
+      background: #001a00;
+      cursor: pointer;
+    }
+    .gallery-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      filter: sepia(0.2) hue-rotate(80deg) saturate(0.8);
+      transition: filter 0.2s;
+    }
+    .gallery-item:active img { filter: none; }
+    .gallery-item .item-time {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      padding: 4px 6px;
+      background: rgba(0,0,0,0.7);
+      font-size: 7px;
+      letter-spacing: 1px;
+      color: var(--green-dim);
+    }
+
+    #gallery-empty {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--green-dim);
+      font-size: 11px;
+      letter-spacing: 2px;
+      opacity: 0.5;
+    }
+
+    /* ── Permission Error ────────────────────────────────────────────── */
+    #perm-error {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      background: var(--bg);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 30px;
+      text-align: center;
+    }
+    #perm-error.show { display: flex; }
+    #perm-error h2 {
+      font-family: var(--font-hud);
+      font-size: 14px;
+      letter-spacing: 3px;
+      color: var(--red);
+      margin-bottom: 16px;
+    }
+    #perm-error p {
+      font-size: 11px;
+      line-height: 1.8;
+      color: var(--green-dim);
+      letter-spacing: 1px;
+    }
+    #retry-btn {
+      margin-top: 24px;
+      padding: 12px 28px;
+      background: transparent;
+      border: 1px solid var(--green);
+      color: var(--green);
+      font-family: var(--font-hud);
+      font-size: 10px;
+      letter-spacing: 3px;
+      cursor: pointer;
+      border-radius: 2px;
+    }
+
+    /* Glow pulse on alert */
+    @keyframes glow-pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(255,32,32,0); }
+      50%      { box-shadow: 0 0 0 8px rgba(255,32,32,0.4); }
+    }
+    #camera-view.motion-detected { animation: glow-pulse 0.5s 2; }
+  </style>
+</head>
+<body>
+
+<!-- ══ CAMERA VIEW ══════════════════════════════════════════════════════════ -->
+<div id="camera-view" class="view active">
+
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+
+  <!-- Overlays -->
+  <div class="scanlines"></div>
+  <div class="corner corner-tl"></div>
+  <div class="corner corner-tr"></div>
+  <div class="corner corner-bl"></div>
+  <div class="corner corner-br"></div>
+  <div id="crosshair"></div>
+  <div id="motion-flash"></div>
+
+  <!-- Log panel -->
+  <div id="log-panel"></div>
+
+  <!-- Top HUD -->
+  <div id="hud-top">
+    <div id="logo">AXEROCAM</div>
+    <div id="clock">--:--:--</div>
+    <div id="rec-badge">
+      <div id="rec-dot"></div>
+      <span>REC</span>
+    </div>
+  </div>
+
+  <!-- Bottom HUD -->
+  <div id="hud-bottom">
+    <div id="status-line">◉ MONITORING ACTIVE</div>
+    <div id="sensitivity-wrap">
+      <label>SENSITIVITY</label>
+      <input type="range" id="sensitivity" min="5" max="60" value="20" />
+      <span id="sens-value">20</span>
+    </div>
+    <div id="btn-row">
+      <button class="hud-btn" id="btn-camera">⇄ FLIP CAM</button>
+      <button class="hud-btn" id="btn-snapshot">📸 CAPTURE</button>
+      <button class="hud-btn" id="btn-gallery">🗂 GALLERY</button>
+      <button class="hud-btn danger" id="btn-stop">■ STOP</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ GALLERY VIEW ═════════════════════════════════════════════════════════ -->
+<div id="gallery-view" class="view">
+  <div id="gallery-header">
+    <h1>AXEROCAM — CAPTURES</h1>
+    <button class="hud-btn" id="btn-back" style="flex:0;padding:7px 14px;">← BACK</button>
+  </div>
+  <div id="gallery-grid">
+    <div id="gallery-empty">NO CAPTURES YET</div>
+  </div>
+</div>
+
+<!-- ══ PERMISSION ERROR ═════════════════════════════════════════════════════ -->
+<div id="perm-error">
+  <h2>⚠ CAMERA ACCESS DENIED</h2>
+  <p>
+    AXEROCAM requires camera permission to operate.<br /><br />
+    Please allow camera access in your browser settings,<br />
+    then tap RETRY below.
+  </p>
+  <button id="retry-btn">↺ RETRY</button>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
