@@ -6,21 +6,23 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>AXEROCAM</title>
+  <title>AXEROCAM v2</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet" />
 
   <style>
-    /* ── Reset & Base ─────────────────────────────────────────────────── */
+    /* ── Reset ──────────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
       --green:      #00ff41;
       --green-dim:  #00c832;
       --green-dark: #003b0f;
-      --red:        #ff2020;
+      --red:        #ff2828;
+      --red-dim:    #cc0000;
       --yellow:     #ffe600;
+      --purple:     #c84bff;
       --bg:         #000a00;
       --panel:      rgba(0, 255, 65, 0.04);
       --border:     rgba(0, 255, 65, 0.18);
@@ -36,121 +38,75 @@
       overflow: hidden;
     }
 
-    /* ── Views ───────────────────────────────────────────────────────── */
+    /* ── Views ──────────────────────────────────────────────────────────── */
     .view { display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
     .view.active { display: flex; }
 
-    /* ══════════════════════════════════════════════════════════════════
+    /* ════════════════════════════════════════════════════════════════════
        CAMERA VIEW
-    ══════════════════════════════════════════════════════════════════ */
+    ════════════════════════════════════════════════════════════════════ */
     #camera-view {
       flex-direction: column;
       align-items: stretch;
       position: relative;
     }
 
-    /* Live video feed */
+    /* ── Live video ──────────────────────────────────────────────────── */
     #video {
       position: absolute;
       inset: 0;
-      width: 100%;
-      height: 100%;
+      width: 100%; height: 100%;
       object-fit: cover;
       z-index: 0;
-      /* Mirror for selfie cam — toggle via JS for rear cam */
-      transform: scaleX(-1);
+      transform: scaleX(-1);  /* mirror front cam */
     }
     #video.rear { transform: none; }
 
-    /* Hidden canvas used for motion detection */
     #canvas { display: none; }
 
-    /* ── Scan line overlay ────────────────────────────────────────────── */
+    /* ── CRT scanlines ───────────────────────────────────────────────── */
     .scanlines {
-      position: absolute;
-      inset: 0;
+      position: absolute; inset: 0;
       background: repeating-linear-gradient(
-        0deg,
-        transparent,
-        transparent 2px,
-        rgba(0,0,0,0.08) 2px,
-        rgba(0,0,0,0.08) 4px
+        0deg, transparent, transparent 2px,
+        rgba(0,0,0,0.07) 2px, rgba(0,0,0,0.07) 4px
       );
       pointer-events: none;
       z-index: 1;
     }
 
-    /* ── Corner brackets ─────────────────────────────────────────────── */
+    /* ── Corner bracket markers ──────────────────────────────────────── */
     .corner {
       position: absolute;
-      width: 28px; height: 28px;
+      width: 26px; height: 26px;
       border-color: var(--green);
       border-style: solid;
-      opacity: 0.7;
+      opacity: 0.6;
       z-index: 2;
       pointer-events: none;
+      transition: opacity 0.3s;
     }
-    .corner-tl { top: 14px; left: 14px;  border-width: 2px 0 0 2px; }
-    .corner-tr { top: 14px; right: 14px; border-width: 2px 2px 0 0; }
-    .corner-bl { bottom: 14px; left: 14px;  border-width: 0 0 2px 2px; }
-    .corner-br { bottom: 14px; right: 14px; border-width: 0 2px 2px 0; }
+    .corner-tl { top: 14px;    left: 14px;  border-width: 2px 0 0 2px; }
+    .corner-tr { top: 14px;    right: 14px; border-width: 2px 2px 0 0; }
+    .corner-bl { bottom: 80px; left: 14px;  border-width: 0 0 2px 2px; }
+    .corner-br { bottom: 80px; right: 14px; border-width: 0 2px 2px 0; }
 
-    /* ── Top HUD bar ─────────────────────────────────────────────────── */
-    #hud-top {
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      z-index: 3;
-      padding: 10px 16px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      background: linear-gradient(to bottom, rgba(0,10,0,0.85) 0%, transparent 100%);
+    /* Corners glow red during alarm */
+    body.alarm-state .corner {
+      border-color: var(--red);
+      opacity: 1;
+      filter: drop-shadow(0 0 4px var(--red));
     }
 
-    #logo {
-      font-family: var(--font-hud);
-      font-size: 13px;
-      font-weight: 900;
-      letter-spacing: 3px;
-      color: var(--green);
-      text-shadow: 0 0 12px var(--green);
-    }
-
-    #clock {
-      font-size: 11px;
-      letter-spacing: 2px;
-      color: var(--green-dim);
-      opacity: 0.85;
-    }
-
-    /* REC indicator */
-    #rec-badge {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      font-size: 10px;
-      font-family: var(--font-hud);
-      letter-spacing: 2px;
-      color: var(--red);
-    }
-    #rec-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: var(--red);
-      box-shadow: 0 0 8px var(--red);
-      animation: blink 1s step-start infinite;
-    }
-    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-
-    /* ── Center crosshair ─────────────────────────────────────────────── */
+    /* ── Crosshair ───────────────────────────────────────────────────── */
     #crosshair {
       position: absolute;
       top: 50%; left: 50%;
       transform: translate(-50%, -50%);
-      width: 40px; height: 40px;
+      width: 36px; height: 36px;
       z-index: 2;
       pointer-events: none;
-      opacity: 0.4;
+      opacity: 0.35;
     }
     #crosshair::before, #crosshair::after {
       content: '';
@@ -160,104 +116,10 @@
     #crosshair::before { width: 1px; height: 100%; left: 50%; top: 0; }
     #crosshair::after  { height: 1px; width: 100%; top: 50%; left: 0; }
 
-    /* ── Bottom status bar ───────────────────────────────────────────── */
-    #hud-bottom {
-      position: absolute;
-      bottom: 0; left: 0; right: 0;
-      z-index: 3;
-      padding: 14px 16px 22px;
-      background: linear-gradient(to top, rgba(0,10,0,0.92) 0%, transparent 100%);
-    }
-
-    #status-line {
-      font-family: var(--font-hud);
-      font-size: 10px;
-      letter-spacing: 3px;
-      color: var(--green);
-      text-shadow: 0 0 8px var(--green);
-      margin-bottom: 10px;
-      transition: color 0.3s;
-    }
-    #status-line.alert {
-      color: var(--red);
-      text-shadow: 0 0 10px var(--red);
-      animation: flicker 0.15s 3;
-    }
-    @keyframes flicker { 0%,100%{opacity:1} 50%{opacity:0.3} }
-
-    /* Sensitivity slider */
-    #sensitivity-wrap {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 6px;
-    }
-    #sensitivity-wrap label {
-      font-size: 9px;
-      letter-spacing: 2px;
-      color: var(--green-dim);
-      min-width: 100px;
-    }
-    #sensitivity {
-      -webkit-appearance: none;
-      flex: 1;
-      height: 2px;
-      background: var(--border);
-      outline: none;
-      border-radius: 2px;
-    }
-    #sensitivity::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 14px; height: 14px;
-      border-radius: 50%;
-      background: var(--green);
-      box-shadow: 0 0 6px var(--green);
-      cursor: pointer;
-    }
-    #sens-value {
-      font-size: 9px;
-      color: var(--green);
-      min-width: 30px;
-      text-align: right;
-    }
-
-    /* Bottom button row */
-    #btn-row {
-      display: flex;
-      gap: 8px;
-      margin-top: 10px;
-    }
-
-    .hud-btn {
-      flex: 1;
-      padding: 7px 4px;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      color: var(--green);
-      font-family: var(--font-mono);
-      font-size: 9px;
-      letter-spacing: 2px;
-      cursor: pointer;
-      border-radius: 2px;
-      text-transform: uppercase;
-      transition: background 0.2s, box-shadow 0.2s;
-      -webkit-tap-highlight-color: transparent;
-    }
-    .hud-btn:active {
-      background: rgba(0,255,65,0.12);
-      box-shadow: 0 0 8px var(--green);
-    }
-    .hud-btn.danger {
-      color: var(--red);
-      border-color: rgba(255,32,32,0.3);
-    }
-    .hud-btn.danger:active { box-shadow: 0 0 8px var(--red); }
-
     /* ── Motion flash overlay ────────────────────────────────────────── */
     #motion-flash {
-      position: absolute;
-      inset: 0;
-      background: rgba(255, 32, 32, 0.15);
+      position: absolute; inset: 0;
+      background: rgba(255, 200, 0, 0.10);
       z-index: 4;
       pointer-events: none;
       opacity: 0;
@@ -265,145 +127,342 @@
     }
     #motion-flash.active { opacity: 1; }
 
-    /* ── Log overlay (slide up from bottom) ──────────────────────────── */
+    /* ── ALARM overlay ───────────────────────────────────────────────── */
+    #alarm-overlay {
+      display: none;
+      position: absolute; inset: 0;
+      z-index: 6;
+      pointer-events: none;
+      border: 3px solid var(--red);
+      box-shadow: inset 0 0 40px rgba(255, 32, 32, 0.25);
+      animation: alarm-pulse 0.8s ease-in-out infinite;
+    }
+    #alarm-overlay.active { display: block; pointer-events: all; }
+
+    /* Dismiss button inside alarm overlay */
+    #btn-alarm-dismiss {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 10px 22px;
+      background: rgba(0,0,0,0.85);
+      border: 2px solid var(--red);
+      color: var(--red);
+      font-family: var(--font-hud);
+      font-size: 10px;
+      letter-spacing: 3px;
+      cursor: pointer;
+      border-radius: 2px;
+      animation: alarm-pulse 0.8s ease-in-out infinite;
+    }
+
+    #alarm-label {
+      position: absolute;
+      top: calc(50% - 44px); left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-hud);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 4px;
+      color: var(--red);
+      text-shadow: 0 0 14px var(--red);
+      white-space: nowrap;
+    }
+
+    @keyframes alarm-pulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.55; }
+    }
+
+    /* ── Log panel ───────────────────────────────────────────────────── */
     #log-panel {
       position: absolute;
-      bottom: 100px; left: 0; right: 0;
+      bottom: 176px; left: 0; right: 0;
       z-index: 5;
       padding: 0 16px;
-      max-height: 120px;
+      max-height: 110px;
       overflow: hidden;
       pointer-events: none;
     }
     .log-entry {
       font-size: 9px;
       letter-spacing: 1px;
-      line-height: 1.6;
+      line-height: 1.65;
       color: var(--green-dim);
       animation: fadeUp 0.3s ease;
     }
-    .log-entry.alert-log { color: var(--red); }
-    .log-entry.sent-log  { color: #c84bff; }
+    .log-entry.alert-log { color: var(--yellow); }
+    .log-entry.sent-log  { color: var(--purple); }
+    .log-entry.alarm-log { color: var(--red); }
     @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(6px); }
+      from { opacity: 0; transform: translateY(5px); }
       to   { opacity: 1; transform: translateY(0); }
     }
 
-    /* ══════════════════════════════════════════════════════════════════
+    /* ── Top HUD ─────────────────────────────────────────────────────── */
+    #hud-top {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      z-index: 3;
+      padding: 10px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to bottom, rgba(0,8,0,0.88) 0%, transparent 100%);
+    }
+
+    #logo {
+      font-family: var(--font-hud);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 4px;
+      color: var(--green);
+      text-shadow: 0 0 10px var(--green);
+    }
+
+    #clock {
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: var(--green-dim);
+    }
+
+    #rec-badge {
+      display: flex; align-items: center; gap: 5px;
+      font-family: var(--font-hud);
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: var(--red);
+    }
+    #rec-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--red);
+      box-shadow: 0 0 6px var(--red);
+      animation: blink 1s step-start infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    /* ── Bottom HUD ──────────────────────────────────────────────────── */
+    #hud-bottom {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      z-index: 3;
+      padding: 12px 16px 20px;
+      background: linear-gradient(to top, rgba(0,8,0,0.95) 0%, transparent 100%);
+    }
+
+    /* ── Status line — changes colour per state ──────────────────────── */
+    #status-line {
+      font-family: var(--font-hud);
+      font-size: 10px;
+      letter-spacing: 3px;
+      margin-bottom: 7px;
+      transition: color 0.25s, text-shadow 0.25s;
+    }
+    #status-line.status-monitoring {
+      color: var(--green);
+      text-shadow: 0 0 8px var(--green);
+    }
+    #status-line.status-motion {
+      color: var(--yellow);
+      text-shadow: 0 0 10px var(--yellow);
+      animation: flicker 0.18s 3;
+    }
+    #status-line.status-alarm {
+      color: var(--red);
+      text-shadow: 0 0 12px var(--red);
+      animation: flicker 0.15s infinite;
+    }
+    #status-line.status-stopped {
+      color: #555;
+      text-shadow: none;
+    }
+    @keyframes flicker { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* ── Last capture time ───────────────────────────────────────────── */
+    #last-capture {
+      font-size: 8px;
+      letter-spacing: 2px;
+      color: var(--purple);
+      opacity: 0.75;
+      margin-bottom: 8px;
+      min-height: 12px;
+    }
+
+    /* ── Motion intensity bar ────────────────────────────────────────── */
+    #motion-bar-wrap {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 8px;
+    }
+    #motion-bar-label {
+      font-size: 8px; letter-spacing: 2px;
+      color: var(--green-dim);
+      min-width: 50px;
+    }
+    #motion-bar-track {
+      flex: 1;
+      height: 3px;
+      background: rgba(0,255,65,0.1);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #motion-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--green);
+      border-radius: 2px;
+      transition: width 0.2s, background 0.2s;
+      box-shadow: 0 0 4px currentColor;
+    }
+
+    /* ── Sensitivity slider ──────────────────────────────────────────── */
+    #sensitivity-wrap {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 10px;
+    }
+    #sensitivity-wrap label {
+      font-size: 8px; letter-spacing: 2px;
+      color: var(--green-dim);
+      min-width: 80px;
+    }
+    #sensitivity {
+      -webkit-appearance: none;
+      flex: 1; height: 2px;
+      background: var(--border);
+      outline: none; border-radius: 2px;
+    }
+    #sensitivity::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 5px var(--green);
+      cursor: pointer;
+    }
+    #sens-value {
+      font-size: 8px; color: var(--green);
+      min-width: 14px; text-align: right;
+    }
+
+    /* ── Button row ──────────────────────────────────────────────────── */
+    #btn-row {
+      display: flex; gap: 6px;
+    }
+    .hud-btn {
+      flex: 1;
+      padding: 7px 2px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--green);
+      font-family: var(--font-mono);
+      font-size: 8px;
+      letter-spacing: 1.5px;
+      cursor: pointer;
+      border-radius: 2px;
+      text-transform: uppercase;
+      transition: background 0.15s, box-shadow 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      white-space: nowrap;
+    }
+    .hud-btn:active {
+      background: rgba(0,255,65,0.12);
+      box-shadow: 0 0 7px var(--green);
+    }
+    .hud-btn.danger {
+      color: var(--red);
+      border-color: rgba(255, 40, 40, 0.3);
+    }
+    .hud-btn.danger:active { box-shadow: 0 0 7px var(--red); }
+
+    /* ── Permission error screen ─────────────────────────────────────── */
+    #perm-error {
+      display: none;
+      position: absolute; inset: 0;
+      z-index: 20;
+      background: var(--bg);
+      flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 30px; text-align: center;
+    }
+    #perm-error.show { display: flex; }
+    #perm-error h2 {
+      font-family: var(--font-hud);
+      font-size: 13px; letter-spacing: 3px;
+      color: var(--red); margin-bottom: 14px;
+    }
+    #perm-error p {
+      font-size: 11px; line-height: 1.8;
+      color: var(--green-dim); letter-spacing: 1px;
+    }
+    #retry-btn {
+      margin-top: 22px;
+      padding: 11px 26px;
+      background: transparent;
+      border: 1px solid var(--green);
+      color: var(--green);
+      font-family: var(--font-hud);
+      font-size: 10px; letter-spacing: 3px;
+      cursor: pointer; border-radius: 2px;
+    }
+
+    /* ════════════════════════════════════════════════════════════════════
        GALLERY VIEW
-    ══════════════════════════════════════════════════════════════════ */
+    ════════════════════════════════════════════════════════════════════ */
     #gallery-view {
       flex-direction: column;
       background: var(--bg);
       overflow-y: auto;
     }
-
     #gallery-header {
-      padding: 16px;
-      background: rgba(0,10,0,0.95);
+      padding: 14px 16px;
+      background: rgba(0,8,0,0.96);
       border-bottom: 1px solid var(--border);
       display: flex;
       justify-content: space-between;
       align-items: center;
-      position: sticky;
-      top: 0;
-      z-index: 10;
+      position: sticky; top: 0; z-index: 10;
     }
     #gallery-header h1 {
       font-family: var(--font-hud);
-      font-size: 12px;
-      letter-spacing: 4px;
+      font-size: 11px; letter-spacing: 4px;
       color: var(--green);
-      text-shadow: 0 0 8px var(--green);
+      text-shadow: 0 0 6px var(--green);
     }
-
     #gallery-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 2px;
-      padding: 2px;
+      gap: 2px; padding: 2px;
     }
-
     .gallery-item {
       position: relative;
       aspect-ratio: 4/3;
       overflow: hidden;
-      background: #001a00;
+      background: #001500;
       cursor: pointer;
     }
     .gallery-item img {
-      width: 100%;
-      height: 100%;
+      width: 100%; height: 100%;
       object-fit: cover;
-      filter: sepia(0.2) hue-rotate(80deg) saturate(0.8);
+      filter: sepia(0.15) hue-rotate(80deg) saturate(0.8);
       transition: filter 0.2s;
     }
     .gallery-item:active img { filter: none; }
     .gallery-item .item-time {
       position: absolute;
       bottom: 0; left: 0; right: 0;
-      padding: 4px 6px;
-      background: rgba(0,0,0,0.7);
-      font-size: 7px;
-      letter-spacing: 1px;
+      padding: 3px 6px;
+      background: rgba(0,0,0,0.75);
+      font-size: 7px; letter-spacing: 1px;
       color: var(--green-dim);
     }
-
     #gallery-empty {
+      grid-column: span 2;
       text-align: center;
       padding: 60px 20px;
       color: var(--green-dim);
-      font-size: 11px;
-      letter-spacing: 2px;
-      opacity: 0.5;
+      font-size: 11px; letter-spacing: 2px;
+      opacity: 0.4;
     }
-
-    /* ── Permission Error ────────────────────────────────────────────── */
-    #perm-error {
-      display: none;
-      position: absolute;
-      inset: 0;
-      z-index: 20;
-      background: var(--bg);
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 30px;
-      text-align: center;
-    }
-    #perm-error.show { display: flex; }
-    #perm-error h2 {
-      font-family: var(--font-hud);
-      font-size: 14px;
-      letter-spacing: 3px;
-      color: var(--red);
-      margin-bottom: 16px;
-    }
-    #perm-error p {
-      font-size: 11px;
-      line-height: 1.8;
-      color: var(--green-dim);
-      letter-spacing: 1px;
-    }
-    #retry-btn {
-      margin-top: 24px;
-      padding: 12px 28px;
-      background: transparent;
-      border: 1px solid var(--green);
-      color: var(--green);
-      font-family: var(--font-hud);
-      font-size: 10px;
-      letter-spacing: 3px;
-      cursor: pointer;
-      border-radius: 2px;
-    }
-
-    /* Glow pulse on alert */
-    @keyframes glow-pulse {
-      0%,100% { box-shadow: 0 0 0 0 rgba(255,32,32,0); }
-      50%      { box-shadow: 0 0 0 8px rgba(255,32,32,0.4); }
-    }
-    #camera-view.motion-detected { animation: glow-pulse 0.5s 2; }
   </style>
 </head>
 <body>
@@ -414,7 +473,7 @@
   <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
 
-  <!-- Overlays -->
+  <!-- Visual layers -->
   <div class="scanlines"></div>
   <div class="corner corner-tl"></div>
   <div class="corner corner-tr"></div>
@@ -423,10 +482,16 @@
   <div id="crosshair"></div>
   <div id="motion-flash"></div>
 
-  <!-- Log panel -->
+  <!-- ALARM overlay (shown during alarm state) -->
+  <div id="alarm-overlay">
+    <div id="alarm-label">⚠ ALARM — CONTINUOUS MOTION</div>
+    <button id="btn-alarm-dismiss">✕ DISMISS ALARM</button>
+  </div>
+
+  <!-- Terminal log -->
   <div id="log-panel"></div>
 
-  <!-- Top HUD -->
+  <!-- Top HUD bar -->
   <div id="hud-top">
     <div id="logo">AXEROCAM</div>
     <div id="clock">--:--:--</div>
@@ -436,27 +501,45 @@
     </div>
   </div>
 
-  <!-- Bottom HUD -->
+  <!-- Bottom HUD bar -->
   <div id="hud-bottom">
-    <div id="status-line">◉ MONITORING ACTIVE</div>
+
+    <!-- 🟢/🟡/🔴 Status indicator -->
+    <div id="status-line" class="status-state status-monitoring">🟢 MONITORING ACTIVE</div>
+
+    <!-- Last capture timestamp -->
+    <div id="last-capture"></div>
+
+    <!-- Live motion intensity bar -->
+    <div id="motion-bar-wrap">
+      <span id="motion-bar-label">MOTION</span>
+      <div id="motion-bar-track">
+        <div id="motion-bar-fill"></div>
+      </div>
+    </div>
+
+    <!-- Sensitivity slider (1 = very sensitive, 10 = low sensitivity) -->
     <div id="sensitivity-wrap">
       <label>SENSITIVITY</label>
-      <input type="range" id="sensitivity" min="5" max="60" value="20" />
-      <span id="sens-value">20</span>
+      <input type="range" id="sensitivity" min="1" max="10" value="5" />
+      <span id="sens-value">5</span>
     </div>
+
+    <!-- Control buttons -->
     <div id="btn-row">
-      <button class="hud-btn" id="btn-camera">⇄ FLIP CAM</button>
-      <button class="hud-btn" id="btn-snapshot">📸 CAPTURE</button>
-      <button class="hud-btn" id="btn-gallery">🗂 GALLERY</button>
+      <button class="hud-btn" id="btn-camera">⇄ FLIP</button>
+      <button class="hud-btn" id="btn-snapshot">📸 CAP</button>
+      <button class="hud-btn" id="btn-gallery">🗂 VIEW</button>
       <button class="hud-btn danger" id="btn-stop">■ STOP</button>
     </div>
+
   </div>
 </div>
 
 <!-- ══ GALLERY VIEW ═════════════════════════════════════════════════════════ -->
 <div id="gallery-view" class="view">
   <div id="gallery-header">
-    <h1>AXEROCAM — CAPTURES</h1>
+    <h1>CAPTURES</h1>
     <button class="hud-btn" id="btn-back" style="flex:0;padding:7px 14px;">← BACK</button>
   </div>
   <div id="gallery-grid">
@@ -466,11 +549,11 @@
 
 <!-- ══ PERMISSION ERROR ═════════════════════════════════════════════════════ -->
 <div id="perm-error">
-  <h2>⚠ CAMERA ACCESS DENIED</h2>
+  <h2>⚠ CAMERA DENIED</h2>
   <p>
-    AXEROCAM requires camera permission to operate.<br /><br />
-    Please allow camera access in your browser settings,<br />
-    then tap RETRY below.
+    AXEROCAM requires camera permission.<br /><br />
+    Allow camera access in your browser settings,<br />
+    then tap RETRY.
   </p>
   <button id="retry-btn">↺ RETRY</button>
 </div>

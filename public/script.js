@@ -1,116 +1,210 @@
 /**
- * AXEROCAM — script.js
- * Motion detection engine, camera management, screenshot upload, gallery, UI
+ * AXEROCAM v2 — script.js
+ * ─────────────────────────────────────────────────────────────────────────────
+ * UPGRADES IN THIS VERSION:
+ *  • Changed-pixel-ratio algorithm (far more sensitive than averaged delta)
+ *  • setInterval-based loop at 250 ms (predictable, not rAF)
+ *  • Fixed 320×240 detection canvas (fast on low-end Android)
+ *  • 2-second capture cooldown (continuous capture while motion persists)
+ *  • Continuous motion tracker → 60-second ALARM state
+ *  • Alarm: repeated Telegram text alert every 5 seconds
+ *  • Status indicators: 🟢 Monitoring / 🟡 Motion / 🔴 Alarm
+ *  • Last-capture timestamp shown on HUD
+ *  • Alarm resets automatically when motion stops for 3+ seconds
+ *  • Live motion intensity bar on HUD
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 'use strict';
 
-// ─── DOM References ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOM REFERENCES
+// ═══════════════════════════════════════════════════════════════════════════════
 
-const video       = document.getElementById('video');
-const canvas      = document.getElementById('canvas');
-const ctx         = canvas.getContext('2d', { willReadFrequently: true });
-const motionFlash = document.getElementById('motion-flash');
-const statusLine  = document.getElementById('status-line');
-const logPanel    = document.getElementById('log-panel');
-const clock       = document.getElementById('clock');
-const sensSlider  = document.getElementById('sensitivity');
-const sensValue   = document.getElementById('sens-value');
-const permError   = document.getElementById('perm-error');
-const cameraView  = document.getElementById('camera-view');
-const galleryView = document.getElementById('gallery-view');
-const galleryGrid = document.getElementById('gallery-grid');
+const video         = document.getElementById('video');
+const canvas        = document.getElementById('canvas');
+const ctx           = canvas.getContext('2d', { willReadFrequently: true });
+const motionFlash   = document.getElementById('motion-flash');
+const statusLine    = document.getElementById('status-line');
+const logPanel      = document.getElementById('log-panel');
+const clockEl       = document.getElementById('clock');
+const sensSlider    = document.getElementById('sensitivity');
+const sensValue     = document.getElementById('sens-value');
+const permError     = document.getElementById('perm-error');
+const galleryGrid   = document.getElementById('gallery-grid');
+const lastCaptureEl = document.getElementById('last-capture');
+const alarmOverlay  = document.getElementById('alarm-overlay');
+const motionBarFill = document.getElementById('motion-bar-fill');
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIGURATION  (tune these constants to change behaviour)
+// ═══════════════════════════════════════════════════════════════════════════════
 
-let stream        = null;        // MediaStream
-let facingMode    = 'environment'; // 'user' = front, 'environment' = rear
-let monitoring    = false;       // is the detection loop running?
-let animFrameId   = null;        // requestAnimationFrame handle
-let prevFrameData = null;        // pixel data from previous frame
-let lastAlert     = 0;           // timestamp of last Telegram upload
-let isSending     = false;       // prevent concurrent uploads
-let burstCount    = 0;           // burst mode counter
+const CFG = {
+  // Detection canvas size — smaller = faster. 320x240 is plenty.
+  DETECT_W:           320,
+  DETECT_H:           240,
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+  // A pixel is "changed" if its average RGB delta > this value (0–255).
+  // 20 is a good default — ignores minor sensor noise but catches real movement.
+  PER_PIXEL_THRESH:   20,
 
-const COOLDOWN_MS      = 8000;   // 8 s between alerts
-const BURST_SHOTS      = 3;      // number of burst captures
-const BURST_DELAY_MS   = 1000;   // delay between burst captures
-const DETECTION_SCALE  = 0.25;   // downscale factor for speed
-const LOG_MAX          = 6;      // max log lines shown
+  // How often we run the detection comparison (milliseconds)
+  DETECT_INTERVAL:    250,
 
-// ─── Utility: sleep ──────────────────────────────────────────────────────────
+  // Minimum gap between two screenshot uploads (milliseconds)
+  CAPTURE_COOLDOWN:   2000,
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  // If no motion is detected for this long, reset the continuous-motion timer
+  MOTION_RESET_GAP:   3000,
 
-// ─── Clock ────────────────────────────────────────────────────────────────────
+  // Duration of continuous motion before ALARM is triggered
+  ALARM_AFTER_MS:     60000,
+
+  // In alarm state: send a Telegram text alert this often
+  ALARM_MSG_INTERVAL: 5000,
+
+  // Max log lines shown on screen at once
+  LOG_MAX:            7,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let stream          = null;    // MediaStream from getUserMedia
+let facingMode      = 'environment';
+let monitoring      = false;   // is the detection interval running?
+let detectTimer     = null;    // setInterval handle
+let prevFrameData   = null;    // ImageData from previous detection tick
+
+// Capture state
+let lastCaptureTime = 0;       // ms timestamp of last successful upload
+let isSending       = false;   // true while an upload is in progress
+
+// Continuous motion tracking
+let motionActive    = false;   // is motion currently happening?
+let motionStartTime = 0;       // when did the current motion sequence begin?
+let lastMotionTime  = 0;       // timestamp of the last detected motion tick
+
+// Alarm state
+let alarmActive     = false;   // are we in ALARM mode?
+let alarmMsgTimer   = null;    // setInterval handle for repeated alarm messages
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const sleep   = (ms) => new Promise(r => setTimeout(r, ms));
+
+/** Returns current time as HH:MM:SS string */
+const timeStr = () => {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLOCK
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function startClock() {
-  const update = () => {
-    const now = new Date();
-    const pad = n => String(n).padStart(2, '0');
-    clock.textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-  };
-  update();
-  setInterval(update, 1000);
+  const tick = () => { clockEl.textContent = timeStr(); };
+  tick();
+  setInterval(tick, 1000);
 }
 
-// ─── Terminal-style logger ────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOGGER
+// ═══════════════════════════════════════════════════════════════════════════════
 
-function addLog(prefix, message, type = '') {
+/**
+ * Appends a styled terminal-style log line to the on-screen panel.
+ * @param {string} prefix  e.g. '[ALERT]'
+ * @param {string} message
+ * @param {string} [cls]   CSS modifier: 'alert-log' | 'sent-log' | 'alarm-log'
+ */
+function addLog(prefix, message, cls = '') {
   const entry = document.createElement('div');
-  entry.className = `log-entry${type ? ' ' + type : ''}`;
+  entry.className = `log-entry${cls ? ' ' + cls : ''}`;
   entry.textContent = `${prefix} ${message}`;
   logPanel.appendChild(entry);
 
-  // Keep only LOG_MAX lines
-  while (logPanel.children.length > LOG_MAX) {
+  // Trim to max visible lines
+  while (logPanel.children.length > CFG.LOG_MAX) {
     logPanel.removeChild(logPanel.firstChild);
   }
 
-  // Auto-remove old entries after 8 s
+  // Fade out after 9 s
   setTimeout(() => {
-    entry.style.opacity = '0';
     entry.style.transition = 'opacity 0.5s';
+    entry.style.opacity    = '0';
     setTimeout(() => entry.remove(), 500);
-  }, 8000);
+  }, 9000);
 }
 
-// ─── Camera Setup ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATUS INDICATORS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Updates the HUD status line and its colour state.
+ * @param {'monitoring'|'motion'|'alarm'|'stopped'} state
+ */
+function setStatus(state) {
+  // Strip all state classes, apply the new one
+  statusLine.className = 'status-state status-' + state;
+
+  switch (state) {
+    case 'monitoring':
+      statusLine.textContent = '🟢 MONITORING ACTIVE';
+      break;
+    case 'motion':
+      statusLine.textContent = '🟡 MOTION DETECTED';
+      break;
+    case 'alarm':
+      statusLine.textContent = '🔴 ALARM — CONTINUOUS MOTION';
+      break;
+    case 'stopped':
+      statusLine.textContent = '⚫ MONITORING STOPPED';
+      break;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CAMERA SETUP
+// ═══════════════════════════════════════════════════════════════════════════════
 
 async function startCamera(facing = 'environment') {
-  // Stop any existing stream
+  // Stop previous stream if any
   if (stream) {
     stream.getTracks().forEach(t => t.stop());
     stream = null;
   }
 
-  const constraints = {
-    video: {
-      facingMode: facing,
-      width:  { ideal: 1280 },
-      height: { ideal: 720 },
-    },
-    audio: false,
-  };
-
   try {
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
-    video.srcObject = stream;
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: facing,
+        width:      { ideal: 1280 },
+        height:     { ideal: 720 },
+      },
+      audio: false,
+    });
 
-    // Mirror front cam, don't mirror rear cam
+    video.srcObject = stream;
     video.classList.toggle('rear', facing === 'environment');
 
+    // Wait for video metadata before reading dimensions
     await new Promise(resolve => { video.onloadedmetadata = resolve; });
-    video.play();
+    await video.play();
 
-    // Size the hidden canvas to a downscaled version for speed
-    canvas.width  = Math.round(video.videoWidth  * DETECTION_SCALE);
-    canvas.height = Math.round(video.videoHeight * DETECTION_SCALE);
+    // Fixed detection canvas size — always 320×240 regardless of video resolution
+    canvas.width  = CFG.DETECT_W;
+    canvas.height = CFG.DETECT_H;
 
     permError.classList.remove('show');
-    addLog('[INFO]', 'Camera stream active');
+    addLog('[INFO]', `Camera active (${facing})`);
     return true;
   } catch (err) {
     console.error('Camera error:', err);
@@ -120,208 +214,375 @@ async function startCamera(facing = 'environment') {
   }
 }
 
-// ─── Motion Detection ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// MOTION DETECTION  — CHANGED-PIXEL RATIO ALGORITHM
+// ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Returns a score 0–100 representing how much pixel-level change
- * occurred between the current frame and the previous frame.
+ * Counts how many pixels changed significantly between two frames.
+ *
+ * WHY BETTER THAN THE OLD APPROACH:
+ *   Old: averaged ALL pixel deltas → result diluted to near 0 → misses real motion
+ *   New: counts only pixels that ACTUALLY changed above a threshold → clear signal
+ *
+ * @param  {ImageData} cur   current frame
+ * @param  {ImageData} prev  previous frame
+ * @returns {number} 0–100 — percentage of changed pixels
  */
-function computeMotionScore(currentData, previousData) {
-  const len   = currentData.data.length;
-  let   total = 0;
+function computeMotionScore(cur, prev) {
+  const d1    = cur.data;
+  const d2    = prev.data;
+  const total = d1.length / 4;  // total pixel count (RGBA → /4)
+  let changed = 0;
 
-  // Compare every 4th pixel (skip alpha) for performance
-  for (let i = 0; i < len; i += 16) {
-    const dr = Math.abs(currentData.data[i]     - previousData.data[i]);
-    const dg = Math.abs(currentData.data[i + 1] - previousData.data[i + 1]);
-    const db = Math.abs(currentData.data[i + 2] - previousData.data[i + 2]);
-    // Average colour distance, normalised to 0–1
-    total += (dr + dg + db) / 3 / 255;
+  // Step by 8 bytes = sample every 2nd pixel (halves CPU on mobile)
+  for (let i = 0; i < d1.length; i += 8) {
+    const dr = Math.abs(d1[i]     - d2[i]);
+    const dg = Math.abs(d1[i + 1] - d2[i + 1]);
+    const db = Math.abs(d1[i + 2] - d2[i + 2]);
+    if ((dr + dg + db) / 3 > CFG.PER_PIXEL_THRESH) {
+      changed++;
+    }
   }
 
-  // Number of sampled pixels
-  const sampleCount = len / 16;
-  return (total / sampleCount) * 100;
+  // We sampled every 2nd pixel, so effective sample count = total / 2
+  return (changed / (total / 2)) * 100;
 }
 
 /**
- * Main detection loop — runs via requestAnimationFrame.
+ * Converts the slider value (1–10) to a motion threshold (% changed pixels).
+ *
+ * Slider 1  = HIGH sensitivity → threshold  0.4% (fires on tiny movement)
+ * Slider 5  = MEDIUM           → threshold  3.5%
+ * Slider 10 = LOW sensitivity  → threshold  8.0% (only large movement)
  */
-function detectionLoop() {
-  if (!monitoring) return;
+function getThreshold() {
+  const sens = parseInt(sensSlider.value, 10);   // 1–10
+  // Linear interpolation: 1→8.0, 10→0.4
+  return 8.0 - (sens - 1) * (7.6 / 9);
+}
 
-  // Draw current frame (downscaled) to hidden canvas
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const currentFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+// ═══════════════════════════════════════════════════════════════════════════════
+// DETECTION LOOP  (runs every CFG.DETECT_INTERVAL ms via setInterval)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function runDetection() {
+  // Skip if video not ready
+  if (!monitoring || video.readyState < 2) return;
+
+  // Draw video frame downscaled to detection canvas
+  ctx.drawImage(video, 0, 0, CFG.DETECT_W, CFG.DETECT_H);
+  const curFrame = ctx.getImageData(0, 0, CFG.DETECT_W, CFG.DETECT_H);
 
   if (prevFrameData) {
-    const score     = computeMotionScore(currentFrame, prevFrameData);
-    const threshold = parseInt(sensSlider.value, 10) / 4; // map 5–60 → ~1.25–15
+    const score     = computeMotionScore(curFrame, prevFrameData);
+    const threshold = getThreshold();
+
+    // Update the live motion bar
+    updateMotionBar(score, threshold);
 
     if (score > threshold) {
-      onMotionDetected();
+      handleMotionDetected();
+    } else {
+      handleMotionAbsent();
     }
   }
 
-  prevFrameData = currentFrame;
-  animFrameId = requestAnimationFrame(detectionLoop);
+  // Store frame for next comparison
+  prevFrameData = curFrame;
 }
 
-/**
- * Called when motion exceeds threshold.
- */
-function onMotionDetected() {
+/** Updates the motion intensity bar in the HUD. */
+function updateMotionBar(score, threshold) {
+  // Bar fills proportionally; cap visual at 20% score (very high motion)
+  const pct = Math.min((score / 20) * 100, 100);
+  motionBarFill.style.width = pct + '%';
+
+  if (alarmActive) {
+    motionBarFill.style.background = 'var(--red)';
+  } else if (score > threshold) {
+    motionBarFill.style.background = 'var(--yellow)';
+  } else {
+    motionBarFill.style.background = 'var(--green)';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MOTION EVENT HANDLING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Called each tick where motion IS above threshold. */
+function handleMotionDetected() {
   const now = Date.now();
+  lastMotionTime = now;
 
-  // Flash the red overlay
-  motionFlash.classList.add('active');
-  setTimeout(() => motionFlash.classList.remove('active'), 200);
+  // Start a new motion sequence if one isn't already active
+  if (!motionActive) {
+    motionActive    = true;
+    motionStartTime = now;
+    setStatus('motion');
+    addLog('[ALERT]', `Motion at ${timeStr()}`, 'alert-log');
+    playAlertBeep();
+    flashOverlay('motion');
+  }
 
-  // Update status text
-  statusLine.textContent = '⚠ MOTION DETECTED';
-  statusLine.classList.add('alert');
-  setTimeout(() => {
-    statusLine.textContent = '◉ MONITORING ACTIVE';
-    statusLine.classList.remove('alert');
-  }, 2000);
+  // Check if continuous motion has lasted 60+ seconds → ALARM
+  if (!alarmActive && (now - motionStartTime) >= CFG.ALARM_AFTER_MS) {
+    triggerAlarm();
+  }
 
-  addLog('[ALERT]', 'Motion detected — preparing capture', 'alert-log');
-
-  // Honour cooldown
-  if (isSending || now - lastAlert < COOLDOWN_MS) return;
-
-  // Play alert sound
-  playAlertBeep();
-
-  // Trigger burst capture
-  captureAndSendBurst();
+  // Capture a screenshot if cooldown has elapsed and no upload is in flight
+  if (!isSending && (now - lastCaptureTime) >= CFG.CAPTURE_COOLDOWN) {
+    captureAndSend();
+  }
 }
 
-// ─── Screenshot Capture ───────────────────────────────────────────────────────
+/** Called each tick where motion is BELOW threshold. */
+function handleMotionAbsent() {
+  if (!motionActive) return;
+
+  const silentMs = Date.now() - lastMotionTime;
+
+  // Only reset if motion has been absent for the full reset gap
+  if (silentMs >= CFG.MOTION_RESET_GAP) {
+    resetMotionState();
+  }
+}
+
+/** Resets all motion tracking state back to idle. */
+function resetMotionState() {
+  motionActive    = false;
+  motionStartTime = 0;
+  lastMotionTime  = 0;
+
+  if (alarmActive) {
+    cancelAlarm();
+  }
+
+  setStatus('monitoring');
+  motionBarFill.style.width = '0%';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALARM STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Enters ALARM mode after 60 s of continuous motion. */
+function triggerAlarm() {
+  alarmActive = true;
+  setStatus('alarm');
+  alarmOverlay.classList.add('active');
+
+  addLog('[ALARM]', '⚠ 60s continuous motion — ALARM!', 'alarm-log');
+  playAlarmSiren();
+  flashOverlay('alarm');
+
+  // Immediate first alert, then repeat
+  sendAlarmMessage();
+  alarmMsgTimer = setInterval(sendAlarmMessage, CFG.ALARM_MSG_INTERVAL);
+}
+
+/** Cancels ALARM mode and clears repeated messages. */
+function cancelAlarm() {
+  alarmActive = false;
+  alarmOverlay.classList.remove('active');
+
+  if (alarmMsgTimer) {
+    clearInterval(alarmMsgTimer);
+    alarmMsgTimer = null;
+  }
+
+  addLog('[INFO]', 'Alarm cleared — motion stopped');
+}
+
+/** Sends a text-only Telegram alert (no photo) during alarm state. */
+async function sendAlarmMessage() {
+  const ts = timeStr();
+  addLog('[ALARM]', `Sending alarm alert ${ts}`, 'alarm-log');
+
+  try {
+    const res  = await fetch('/alert', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        text: `🚨 *AXEROCAM — ALARM STATE*\n⚠ Continuous motion detected for over 1 minute.\n🕐 Time: \`${ts}\`\n📍 Camera is still active and monitoring.`,
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      addLog('[SENT]', `Alarm alert delivered at ${ts}`, 'sent-log');
+    } else {
+      addLog('[WARN]', `Alarm alert failed: ${data.error}`);
+    }
+  } catch (err) {
+    addLog('[ERROR]', `Alarm send error: ${err.message}`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCREENSHOT CAPTURE & UPLOAD
+// ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Captures the current video frame as a PNG Blob.
- * Uses full-resolution canvas for best quality.
+ * Captures the current video frame at FULL resolution as a PNG Blob.
+ * (Detection uses the small 320×240 canvas; captures use full resolution.)
  */
 function captureFrame() {
-  return new Promise((resolve) => {
-    const captureCanvas = document.createElement('canvas');
-    captureCanvas.width  = video.videoWidth  || 1280;
-    captureCanvas.height = video.videoHeight || 720;
+  return new Promise(resolve => {
+    const cap = document.createElement('canvas');
+    cap.width  = video.videoWidth  || 1280;
+    cap.height = video.videoHeight || 720;
+    const c = cap.getContext('2d');
 
-    const captureCtx = captureCanvas.getContext('2d');
-
-    // Un-mirror front camera for the saved image
+    // Un-mirror the front camera in the saved image
     if (facingMode === 'user') {
-      captureCtx.translate(captureCanvas.width, 0);
-      captureCtx.scale(-1, 1);
+      c.translate(cap.width, 0);
+      c.scale(-1, 1);
     }
 
-    captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-    captureCanvas.toBlob(resolve, 'image/png');
+    c.drawImage(video, 0, 0, cap.width, cap.height);
+    cap.toBlob(resolve, 'image/png');
   });
 }
 
-/**
- * Uploads a PNG Blob to the /upload endpoint.
- */
+/** POSTs a PNG Blob to the /upload server endpoint. */
 async function uploadScreenshot(blob) {
-  const formData = new FormData();
-  formData.append('screenshot', blob, 'screenshot.png');
+  const form = new FormData();
+  form.append('screenshot', blob, 'screenshot.png');
 
-  const response = await fetch('/upload', {
-    method: 'POST',
-    body:   formData,
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Server error ${response.status}: ${text}`);
-  }
-
-  return response.json();
+  const res = await fetch('/upload', { method: 'POST', body: form });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
 /**
- * Captures BURST_SHOTS frames and uploads each one.
+ * Captures one frame and sends it to the server.
+ * Enforces the 2-second cooldown and blocks concurrent uploads.
  */
-async function captureAndSendBurst() {
+async function captureAndSend() {
   if (isSending) return;
-  isSending = true;
-  lastAlert = Date.now();
+  isSending       = true;
+  lastCaptureTime = Date.now();
 
-  for (let i = 0; i < BURST_SHOTS; i++) {
-    try {
-      const blob = await captureFrame();
-      addLog('[INFO]', `Sending capture ${i + 1}/${BURST_SHOTS}...`);
+  const ts = timeStr();
+  addLog('[INFO]', `Capturing at ${ts}`);
 
-      const result = await uploadScreenshot(blob);
+  try {
+    const blob   = await captureFrame();
+    const result = await uploadScreenshot(blob);
 
-      if (result.ok) {
-        addLog('[SENT]', `Screenshot delivered (${result.file})`, 'sent-log');
-      } else {
-        addLog('[WARN]', `Upload issue: ${result.error || 'unknown'}`);
-      }
-    } catch (err) {
-      addLog('[ERROR]', `Upload failed: ${err.message}`);
+    if (result.ok) {
+      addLog('[SENT]', `Screenshot sent (${result.file})`, 'sent-log');
+      updateLastCapture(ts);
+    } else {
+      addLog('[WARN]', `Upload issue: ${result.error || 'unknown'}`);
     }
-
-    if (i < BURST_SHOTS - 1) await sleep(BURST_DELAY_MS);
+  } catch (err) {
+    addLog('[ERROR]', `Upload failed: ${err.message}`);
+  } finally {
+    isSending = false;
   }
-
-  isSending = false;
 }
 
-/**
- * Manual snapshot (triggered by Capture button).
- */
+/** Manual capture from the 📸 button — ignores cooldown. */
 async function manualCapture() {
   addLog('[INFO]', 'Manual capture triggered');
-  const blob   = await captureFrame();
-  const result = await uploadScreenshot(blob).catch(e => ({ ok: false, error: e.message }));
+  const ts = timeStr();
 
-  if (result.ok) {
-    addLog('[SENT]', `Manual capture sent (${result.file})`, 'sent-log');
-    // Visual confirmation flash
-    motionFlash.style.background = 'rgba(0,255,65,0.15)';
-    motionFlash.classList.add('active');
-    setTimeout(() => {
-      motionFlash.classList.remove('active');
-      motionFlash.style.background = '';
-    }, 300);
-  } else {
-    addLog('[ERROR]', `Manual capture failed: ${result.error}`);
+  try {
+    const blob   = await captureFrame();
+    const result = await uploadScreenshot(blob);
+
+    if (result.ok) {
+      addLog('[SENT]', `Manual capture sent (${result.file})`, 'sent-log');
+      updateLastCapture(ts);
+      flashOverlay('success');
+    } else {
+      addLog('[ERROR]', `Manual failed: ${result.error}`);
+    }
+  } catch (err) {
+    addLog('[ERROR]', `Manual error: ${err.message}`);
   }
 }
 
-// ─── Alert Beep ───────────────────────────────────────────────────────────────
+/** Updates the "LAST CAPTURE: HH:MM:SS" line on the HUD. */
+function updateLastCapture(ts) {
+  lastCaptureEl.textContent = `LAST CAPTURE: ${ts}`;
+}
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// VISUAL FEEDBACK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Flashes the fullscreen overlay.
+ * @param {'motion'|'alarm'|'success'} type
+ */
+function flashOverlay(type) {
+  const colours = {
+    motion:  'rgba(255, 200, 0, 0.10)',
+    alarm:   'rgba(255, 32, 32, 0.28)',
+    success: 'rgba(0, 255, 65, 0.12)',
+  };
+  motionFlash.style.background = colours[type] || colours.motion;
+  motionFlash.classList.add('active');
+  setTimeout(() => {
+    motionFlash.classList.remove('active');
+    motionFlash.style.background = '';
+  }, 280);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDIO
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Short beep for first motion event. */
 function playAlertBeep() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+    const ac   = new (window.AudioContext || window.webkitAudioContext)();
+    const osc  = ac.createOscillator();
+    const gain = ac.createGain();
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(ac.destination);
     osc.type = 'square';
-    osc.frequency.setValueAtTime(880, ctx.currentTime);
-    gain.gain.setValueAtTime(0.06, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.3);
-  } catch (_) {
-    // Audio context may not be available — silently skip
-  }
+    osc.frequency.setValueAtTime(880, ac.currentTime);
+    gain.gain.setValueAtTime(0.05, ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.25);
+    osc.start(ac.currentTime);
+    osc.stop(ac.currentTime + 0.25);
+  } catch (_) { /* no audio context — skip */ }
 }
 
-// ─── Gallery ──────────────────────────────────────────────────────────────────
+/** Rising two-tone siren for alarm state. */
+function playAlarmSiren() {
+  try {
+    const ac   = new (window.AudioContext || window.webkitAudioContext)();
+    const osc  = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain);
+    gain.connect(ac.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(500,  ac.currentTime);
+    osc.frequency.linearRampToValueAtTime(1100, ac.currentTime + 0.45);
+    osc.frequency.linearRampToValueAtTime(500,  ac.currentTime + 0.9);
+    gain.gain.setValueAtTime(0.08, ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 1.0);
+    osc.start(ac.currentTime);
+    osc.stop(ac.currentTime + 1.0);
+  } catch (_) { /* skip */ }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GALLERY
+// ═══════════════════════════════════════════════════════════════════════════════
 
 async function loadGallery() {
-  galleryGrid.innerHTML = '';
+  galleryGrid.innerHTML = '<div style="padding:30px;text-align:center;opacity:0.5;letter-spacing:2px;font-size:10px;">LOADING...</div>';
 
   try {
-    const res   = await fetch('/gallery');
-    const data  = await res.json();
+    const res  = await fetch('/gallery');
+    const data = await res.json();
+    galleryGrid.innerHTML = '';
 
     if (!data.ok || !data.files.length) {
       galleryGrid.innerHTML = '<div id="gallery-empty">NO CAPTURES YET</div>';
@@ -329,23 +590,21 @@ async function loadGallery() {
     }
 
     data.files.forEach(f => {
-      const item = document.createElement('div');
+      const item  = document.createElement('div');
       item.className = 'gallery-item';
 
-      const img = document.createElement('img');
-      img.src     = f.url;
-      img.loading = 'lazy';
-      img.alt     = f.name;
-
-      // Tap to open full image
+      const img   = document.createElement('img');
+      img.src      = f.url;
+      img.loading  = 'lazy';
+      img.alt      = f.name;
       img.addEventListener('click', () => window.open(f.url, '_blank'));
 
-      const timeLabel = document.createElement('div');
-      timeLabel.className   = 'item-time';
-      timeLabel.textContent = f.name.replace('.png', '').replace(/-/g, (m, i) => i < 10 ? '-' : ':');
+      const label = document.createElement('div');
+      label.className   = 'item-time';
+      label.textContent = f.name.replace('.png', '');
 
       item.appendChild(img);
-      item.appendChild(timeLabel);
+      item.appendChild(label);
       galleryGrid.appendChild(item);
     });
   } catch (err) {
@@ -353,115 +612,131 @@ async function loadGallery() {
   }
 }
 
-// ─── View Switching ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// MONITORING CONTROL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function startMonitoring() {
+  if (monitoring) return;
+  monitoring    = true;
+  prevFrameData = null;   // force fresh baseline on next tick
+  detectTimer   = setInterval(runDetection, CFG.DETECT_INTERVAL);
+  setStatus('monitoring');
+  addLog('[LIVE]', 'Monitoring started');
+  document.getElementById('btn-stop').textContent = '■ STOP';
+}
+
+function stopMonitoring() {
+  monitoring = false;
+  if (detectTimer) { clearInterval(detectTimer); detectTimer = null; }
+  resetMotionState();
+  setStatus('stopped');
+  motionBarFill.style.width = '0%';
+  addLog('[INFO]', 'Monitoring stopped');
+  document.getElementById('btn-stop').textContent = '▶ START';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VIEW SWITCHING
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function showView(id) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
 
-// ─── Sensitivity Slider ───────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// SENSITIVITY SLIDER
+// ═══════════════════════════════════════════════════════════════════════════════
 
 sensSlider.addEventListener('input', () => {
   sensValue.textContent = sensSlider.value;
 });
 
-// ─── Button Events ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// BUTTON EVENTS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// Flip camera
 document.getElementById('btn-camera').addEventListener('click', async () => {
-  facingMode = facingMode === 'user' ? 'environment' : 'user';
-  prevFrameData = null; // reset frame diff to avoid false positive on switch
+  facingMode    = facingMode === 'user' ? 'environment' : 'user';
+  prevFrameData = null;  // reset baseline to avoid false-positive on camera switch
   await startCamera(facingMode);
-  addLog('[INFO]', `Camera switched to: ${facingMode}`);
+  addLog('[INFO]', `Switched to ${facingMode} camera`);
 });
 
-// Manual capture
 document.getElementById('btn-snapshot').addEventListener('click', () => {
   manualCapture();
 });
 
-// Gallery
 document.getElementById('btn-gallery').addEventListener('click', () => {
   loadGallery();
   showView('gallery-view');
 });
 
-// Back from gallery
 document.getElementById('btn-back').addEventListener('click', () => {
   showView('camera-view');
 });
 
-// Stop / Start toggle
 document.getElementById('btn-stop').addEventListener('click', () => {
-  if (monitoring) {
-    monitoring = false;
-    cancelAnimationFrame(animFrameId);
-    statusLine.textContent = '■ MONITORING STOPPED';
-    document.getElementById('btn-stop').textContent = '▶ START';
-    addLog('[INFO]', 'Monitoring stopped');
-  } else {
-    monitoring = true;
-    prevFrameData = null;
-    detectionLoop();
-    statusLine.textContent = '◉ MONITORING ACTIVE';
-    document.getElementById('btn-stop').textContent = '■ STOP';
-    addLog('[INFO]', 'Monitoring resumed');
-  }
+  monitoring ? stopMonitoring() : startMonitoring();
 });
 
-// Retry camera permission
+document.getElementById('btn-alarm-dismiss').addEventListener('click', () => {
+  cancelAlarm();
+  addLog('[INFO]', 'Alarm manually dismissed');
+});
+
 document.getElementById('retry-btn').addEventListener('click', async () => {
   const ok = await startCamera(facingMode);
-  if (ok) {
-    monitoring = true;
-    detectionLoop();
-  }
+  if (ok) startMonitoring();
 });
 
-// ─── Prevent sleep / screen lock on mobile (if supported) ────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCREEN WAKE LOCK  (prevents phone from sleeping while monitoring)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 let wakeLock = null;
 async function requestWakeLock() {
   try {
     if ('wakeLock' in navigator) {
       wakeLock = await navigator.wakeLock.request('screen');
-      addLog('[INFO]', 'Screen wake lock acquired');
+      addLog('[INFO]', 'Screen wake lock active');
     }
-  } catch (_) { /* not available */ }
+  } catch (_) { /* not supported on all browsers */ }
 }
 
+// Re-acquire wake lock when tab becomes visible again
 document.addEventListener('visibilitychange', async () => {
-  if (wakeLock !== null && document.visibilityState === 'visible') {
+  if (document.visibilityState === 'visible' && wakeLock !== null) {
     await requestWakeLock();
   }
 });
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════════
 
 (async () => {
   startClock();
-  addLog('[INFO]', 'AXEROCAM initialising...');
+  addLog('[INFO]', 'AXEROCAM v2 initialising...');
 
   const ok = await startCamera(facingMode);
   if (!ok) return;
 
   await requestWakeLock();
 
-  monitoring = true;
-  detectionLoop();
-
+  // Check Telegram connection status
   addLog('[INFO]', 'Connecting to Telegram...');
   try {
     const status = await fetch('/status').then(r => r.json());
-    if (status.chatId.includes('✓') && status.botToken.includes('✓')) {
-      addLog('[SUCCESS]', 'Bot connected — alerts active');
+    if (status.botToken.includes('✓') && status.chatId.includes('✓')) {
+      addLog('[SUCCESS]', 'Telegram bot connected');
     } else {
-      addLog('[WARN]', 'Telegram not fully configured');
+      addLog('[WARN]', 'Telegram not configured');
     }
   } catch (_) {
-    addLog('[WARN]', 'Could not reach server');
+    addLog('[WARN]', 'Server unreachable');
   }
 
-  addLog('[LIVE]', 'Monitoring started — watching for motion');
+  startMonitoring();
 })();
