@@ -107,6 +107,41 @@ app.get('/gallery', (_req, res) => {
   }
 });
 
+// ─── POST /alert ─────────────────────────────────────────────────────────────
+/**
+ * Sends a text-only Telegram message (used by the alarm state).
+ * Body: { text: string }
+ */
+app.post('/alert', async (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ ok: false, error: 'No text provided.' });
+
+  log.alert(`Alarm message: ${text.substring(0, 60)}...`);
+
+  try {
+    if (!BOT_TOKEN || !CHAT_ID) {
+      throw new Error('Telegram not configured.');
+    }
+    const response = await axios.post(
+      `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+      {
+        chat_id:    CHAT_ID,
+        text:       text,
+        parse_mode: 'Markdown',
+      },
+      { timeout: 10000 }
+    );
+    if (!response.data.ok) {
+      throw new Error(response.data.description || 'Telegram error');
+    }
+    log.sent('Alarm message delivered to Telegram');
+    return res.json({ ok: true });
+  } catch (err) {
+    log.error(`Alarm message failed: ${err.message}`);
+    return res.json({ ok: false, error: err.message });
+  }
+});
+
 // ─── GET /status ──────────────────────────────────────────────────────────────
 app.get('/status', (_req, res) => {
   res.json({
@@ -132,9 +167,9 @@ async function sendToTelegram(filePath, timestamp, attempt = 1) {
   const form = new FormData();
   form.append('chat_id', CHAT_ID);
   form.append('caption',
-    `🚨 *AXEROCAM ALERT*\n` +
-    `Motion detected at: \`${timestamp}\`\n` +
-    `📸 Screenshot captured automatically.`,
+    `📸 *Motion detected at ${timestamp}*\n` +
+    `🚨 AXEROCAM automatic capture.\n` +
+    `📍 Review screenshot below.`,
     { contentType: 'text/plain' }
   );
   form.append('parse_mode', 'Markdown');
