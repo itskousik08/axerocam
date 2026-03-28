@@ -57,18 +57,25 @@ axerocam/
    ```
    Look for `"chat":{"id":XXXXXXXXX}` in the response
 
-### 3. Install & Run
-
-```bash
-# Clone or download the project
+💻 Install & Run (Copy Friendly)
+Step 1: Repo clone
+Bash
+git clone https://github.com/itskousik08/axerocam.git
+Step 2: Folder open
+Bash
 cd axerocam
-
-# Install dependencies
+Step 3: Install dependencies
+Bash
 npm install
-
-# Start AXEROCAM
+Step 4: Start project
+Bash
 node start
-```
+👉 First run me bot token + chat id dalna padega
+👉 Auto save ho jayega (config.json)
+📱 Open in Mobile
+Same WiFi pe:
+
+http://localhost:3000
 
 You will be prompted to enter your **Bot Token** and **Chat ID**.  
 Credentials are saved to `config.json` — you won't be asked again next time.
