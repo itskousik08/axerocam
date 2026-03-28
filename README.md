@@ -144,3 +144,91 @@ Open the `https://xxxxx.ngrok.io` URL on your phone — camera will work over HT
 
 ## License
 MIT — free to use, modify, and deploy.
+
+
+
+Samajh gaya bro — tujhe full clean README nahi, bas install section ekdum perfect + copy-friendly chahiye.
+Main sirf wahi part properly polish karke de raha hoon 👇
+
+
+---
+
+💻 Install & Run (One-Click Copy Commands)
+
+1️⃣ Clone Repository
+
+git clone https://github.com/itskousik08/axerocam.git
+
+
+---
+
+2️⃣ Open Project Folder
+
+cd axerocam
+
+
+---
+
+3️⃣ Install Dependencies
+
+npm install
+
+
+---
+
+4️⃣ Start AXEROCAM
+
+node start
+
+
+---
+
+⚠️ First Time Setup (IMPORTANT)
+
+Run karte hi tumse 2 cheez puchega:
+
+Telegram Bot Token
+
+Chat ID
+
+
+
+👉 Ek baar dalne ke baad ye auto save ho jayega config.json me
+👉 Next time directly run hoga (no setup again)
+
+
+---
+
+📱 Access on Mobile
+
+Same WiFi pe:
+
+http://localhost:3000
+
+Ya:
+
+http://192.168.x.x:3000
+
+
+---
+
+🔐 HTTPS Fix (Agar Camera Block ho)
+
+npx ngrok http 3000
+
+👉 Jo HTTPS link mile → phone me open karo
+
+
+---
+
+Bas bro 👍
+Ab ye section GitHub README me directly paste kar sakta hai — clean + pro lagega + ek click copy bhi ho jayega
+
+Agar chahe to main:
+
+🔥 “one-click install script” bhi bana deta (double click → sab auto install)
+
+⚡ ya .bat / .sh file bana deta beginners ke liye
+
+
+Bol dena 🚀
